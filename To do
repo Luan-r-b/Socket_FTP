@@ -1,0 +1,7 @@
+To do
+- Limite de usuários e taxa de transferência configurado ao executar servidor
+- Utilizar multiplexing, como com a função select() ou poll() para gerenciar múltiplas conexões simultaneamente
+- O servidor não pode enviar mais do que 256 bytes por segundo. Se o servidor estiver atendendo mais de um cliente simultaneamente, a taxa de transferência deve ser dividida. Utilize o padrão de projeto throttling
+- A cada 128 bytes, o comando cria ou atualiza um arquivo temporário, representado pelo nome do arquivo seguido pela extensão .part.
+- No caso de um cliente tentar transferir um arquivo de/para um servidor que esteja operando no seu limite, o servidor retorna uma mensagem de erro e o cliente irá tentar retomar a transferência novamente. O padrão de projeto retry.
+- Envio de uma máquina a outra e dentro da mesma máquina(trocando ordem dos parâmetros)
