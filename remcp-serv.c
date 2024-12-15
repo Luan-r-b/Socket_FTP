@@ -17,29 +17,42 @@
 #define MAX_BYTES_PER_SECOND 100 
 
 typedef struct {
-  int server_status;
+  int server_status; // Backoff == 0 | Send == 1 | Transefer == 2 
   time_t back_off;
   unsigned int bucket_size;
 } ServerState;
 
-int processed_bytes = 0;
-time_t start_time;
-int overwhelmed_bytes_second = 0;
-
 typedef struct {
-    int overwhelmed_bytes;
-    int byte_rate;
-    char message[256];
-} ErrorMessage;
+  char ip[INET_ADDRSTRLEN];
+  char type[16];
+  char origin_path[100];
+  char target_path[100];  
+} Connect_Message;
+
+time_t start_time;
 
 void handle_client(int client_socket, char *tipo, char *origem_path, char *file_path);
 void daemonize();
-void start_server();
+int start_server();
+int listen_client(int server_fd);
+Connect_Message receive_connect_message(int client_fd);
+int receive_file(int client_fd, Connect_Message connect);
+void send_status(int client_socket, ServerState status);
 
 int main() {
   //daemonize();
-  start_server();
-  return 0;
+  int server_fd = start_server();
+// In main function, modify the string comparison:
+  while (1) {
+      int client_fd = listen_client(server_fd);
+      Connect_Message connect_message = receive_connect_message(client_fd);
+      printf("Connect message received in main\n");
+      
+      // Correct string comparison
+      if (strcmp(connect_message.type, "SEND") == 0) {
+          handle_client(client_fd, connect_message.type, connect_message.origin_path, connect_message.target_path);
+      }
+  }
 }
 
 void daemonize() {
@@ -63,21 +76,8 @@ void daemonize() {
     close(STDERR_FILENO);
 }
 
-void client_connect(){
+int start_server(){
   int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-  int client_fd;
-  int len, result;
-
-  if (server_fd == -1) {
-    perror("Erro ao criar socket");
-    exit(EXIT_FAILURE);
-  }
-
-}
-
-void start_server() {
-  int server_fd = socket(AF_INET, SOCK_STREAM, 0);
-  int client_fd;
   int len, result;
 
   if (server_fd == -1) {
@@ -105,101 +105,91 @@ void start_server() {
   }
 
   printf("Servidor escutando na porta 9734...\n");
-  start_time = time(NULL);
-
-  while (1) {
-    struct sockaddr_in client_addr;
-    socklen_t addr_len = sizeof(client_addr);
-    client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
-
-    if (client_fd < 0) {
-      perror("Erro ao aceitar conexão");
-      continue;
-    }
-
-    time_t current_time = time(NULL);
-    if (difftime(current_time, start_time) >= 1) {
-      // Reset the counter every second
-      processed_bytes = 0;
-      overwhelmed_bytes_second = 0;
-      start_time = current_time;
-    }
-
-    char buffer[256] = {0};
-    char tipo[16], origem_path[100], file_path[100];
-    int size;
-    int recv_bytes = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
-    if (recv_bytes < 0) {
-        perror("Error receiving command from client");
-        close(client_fd);
-        continue;
-    }
-    buffer[recv_bytes] = '\0'; // Ensure null-termination
-    printf("Received command: %s\n", buffer);
-    sscanf(buffer, "%s %s %s %d", tipo, origem_path, file_path, &size);
-    printf("Parsed command: tipo=%s, origem_path=%s, file_path=%s, size=%d\n", tipo, origem_path, file_path, size);
-    printf("tipo = %s\n", tipo);
-    printf("origem_path = %s\n", origem_path);
-    printf("file_path = %s\n", file_path);
-    printf("size = %d\n", size);
-    int bytes_received = size;
-
-    if (bytes_received < 0) {
-      close(client_fd);
-      continue;
-    }
-
-    if (processed_bytes + bytes_received > MAX_BYTES_PER_SECOND) {
-      // Calculate suggested wait time based on the byte size of the message
-      overwhelmed_bytes_second+=bytes_received;
-            
-      ErrorMessage error_message;
-      error_message.overwhelmed_bytes=overwhelmed_bytes_second;
-      error_message.byte_rate=MAX_BYTES_PER_SECOND;
-      snprintf(error_message.message, sizeof(error_message.message), "Server busy, try again later. Overwhelmed bytes: %d. Byte_rate: %d BYTES/SECOND ", error_message.overwhelmed_bytes,error_message.byte_rate);
-
-      send(client_fd, &error_message, sizeof(ErrorMessage), 0);
-      close(client_fd);
-      continue;
-    }
-    else{
-      processed_bytes += bytes_received;
-      handle_client(client_fd, tipo, origem_path, file_path);
-      char response[250] = "Operação executada";
-      send(client_fd, response, strlen(response), 0);
-      close(client_fd);
-    }
-  }
-
-  close(server_fd);
+  return server_fd;
 }
 
+int listen_client(int server_fd){
+  int client_fd;
+  struct sockaddr_in client_addr;
+  socklen_t addr_len = sizeof(client_addr);
+  client_fd = accept(server_fd, (struct sockaddr *)&client_addr, &addr_len);
+
+  if (client_fd < 0) {
+    perror("Erro ao aceitar conexão");
+  }
+  return client_fd;
+}
+
+Connect_Message receive_connect_message(int client_fd) {
+    char buffer[BUFFER_SIZE] = {0};
+    Connect_Message connect_msg = {0};
+    
+    // Receive the message
+    int bytes_received = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+    if (bytes_received <= 0) {
+        perror("Error receiving Connect_Message");
+        close(client_fd);
+        exit(EXIT_FAILURE);
+    }
+    buffer[bytes_received] = '\0';
+
+    // Parse the message
+    sscanf(buffer, "%[^|]|%[^|]|%[^|]|%[^|]",
+           connect_msg.ip, connect_msg.type, connect_msg.origin_path, connect_msg.target_path);
+
+    printf("Received Connect_Message:\n");
+    printf("  ip: %s\n", connect_msg.ip);
+    printf("  type: %s\n", connect_msg.type);
+    printf("  origin_path: %s\n", connect_msg.origin_path);
+    printf("  target_path: %s\n", connect_msg.target_path);
+
+    // Create and serialize the response
+    ServerState server_state = {0};
+    
+    // Check message type and set appropriate response
+    if (strcmp(connect_msg.type, "SEND") == 0 || strcmp(connect_msg.type, "RELOCATE") == 0) {
+        server_state.server_status = 1;
+        server_state.bucket_size = MAX_BYTES_PER_SECOND;
+        server_state.back_off = 0;
+    } else {
+        server_state.server_status = 0;
+        server_state.bucket_size = 0;
+        server_state.back_off = 5;
+    }
+
+    // Convert ServerState to network byte order before sending
+    ServerState network_state = {
+        .server_status = htonl(server_state.server_status),
+        .back_off = htonl(server_state.back_off),
+        .bucket_size = htonl(server_state.bucket_size)
+    };
+
+    // Send the response
+    if (send(client_fd, &network_state, sizeof(ServerState), 0) == -1) {
+        perror("Error sending ServerState");
+        exit(EXIT_FAILURE);
+    }
+
+    return connect_msg;
+}
+
+
 void handle_client(int client_socket, char *tipo, char *origem_path, char *file_path) {
+  printf("entering handle_client");
   FILE *file = fopen(file_path, "wb");
   if (!file) {
-      perror("Erro ao criar arquivo");
-      printf("Failed to open file: %s\n", file_path);
-      return;
+    perror("Erro ao criar arquivo");
+    return;
   }
-  printf("Successfully opened file for writing: %s\n", file_path);
-  if (strcmp(tipo, "SEND") == 0) {
-      char buffer[BUFFER_SIZE];
-      ssize_t bytes_received;
-      while ((bytes_received = recv(client_socket, buffer, BUFFER_SIZE, 0)) > 0) {
-          printf("Received %ld bytes from client: %.*s\n", bytes_received, (int)bytes_received, buffer);
-          if (fwrite(buffer, 1, bytes_received, file) != (size_t)bytes_received) {
-              perror("Error writing to file");
-              printf("Failed to write all received bytes to file\n");
-              break; // Exit loop on write error
-          } else {
-              printf("Successfully wrote %ld bytes to file\n", bytes_received);
-          }
-      }
-      if (bytes_received < 0) {
-          perror("Error receiving data from client");
-      }
-  }
-  else if(strcmp(tipo, "RELOCATE") == 0){
+
+  if(strcmp(tipo, "SEND") == 0){
+    char buffer[BUFFER_SIZE];
+    ssize_t bytes_received;
+    while ((bytes_received = recv(client_socket, buffer, BUFFER_SIZE, 0)) > 0) {
+      printf("buffer: %s \n", buffer);
+      fwrite(buffer, 1, bytes_received, file);
+    }
+  }else if(strcmp(tipo, "RELOCATE") == 0){
     char buffer_relocate[4096];
     size_t bytes_read;
 
@@ -215,5 +205,43 @@ void handle_client(int client_socket, char *tipo, char *origem_path, char *file_
       }
     }
   }
+
   fclose(file);
+  close(client_socket);
+}
+
+int receive_file(int client_fd, Connect_Message connect) {
+    char buffer[BUFFER_SIZE];
+    ssize_t bytes_received;
+    size_t total_bytes_received = 0;
+
+    // Open the target file for writing
+    FILE *file = fopen(connect.target_path, "wb");
+    if (!file) {
+        perror("Error opening file for writing");
+        return -1;
+    }
+
+    printf("Receiving file and saving to: %s\n", connect.target_path);
+
+    // Receive data in chunks and write to the file
+    while ((bytes_received = recv(client_fd, buffer, BUFFER_SIZE, 0)) > 0) {
+        if (fwrite(buffer, 1, bytes_received, file) != (size_t)bytes_received) {
+            perror("Error writing to file");
+            fclose(file);
+            return -1;
+        }
+        total_bytes_received += bytes_received;
+    }
+
+    // Handle errors or end of transmission
+    if (bytes_received < 0) {
+        perror("Error receiving data from client");
+        fclose(file);
+        return -1;
+    }
+
+    fclose(file);
+    printf("File transfer completed successfully. Total bytes received: %zu\n", total_bytes_received);
+    return 0;
 }
